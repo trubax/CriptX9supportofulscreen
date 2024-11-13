@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isParticipant(chatId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/chats/$(chatId)) &&
+             request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+    }
+
+    // Rules for users collection
+    match /users/{userId} {
+      function isProfileVisible() {
+        return request.auth != null &&
+               (request.auth.uid == userId ||
+                !resource.data.isPrivate ||
+                request.auth.uid in resource.data.followers);
+      }
+
+      function isBlockedUser() {
+        return request.auth.uid in resource.data.blockedUsers;
+      }
+
+      allow read: if !isBlockedUser() && (
+        !resource.data.isPrivate || 
+        isProfileVisible()
+      );
+      
+      allow update: if request.auth != null && 
+                    request.auth.uid == userId &&
+                    (!('blockedUsers' in request.resource.data) || 
+                     request.resource.data.blockedUsers == resource.data.blockedUsers);
+    }
+
+    // Rules for chats collection
+    match /chats/{chatId} {
+      allow create: if isSignedIn();
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participants ||
+        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+      );
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow delete: if isSignedIn() && request.auth.uid in resource.data.participants;
+      
+      // Chat messages subcollection
+      match /messages/{messageId} {
+        allow read: if isParticipant(chatId);
+        allow create: if isParticipant(chatId);
+        allow update, delete: if isSignedIn() && (
+          resource.data.senderId == request.auth.uid ||
+          request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+        );
+      }
+    }
+
+    // Rules for status collection
+    match /status/{userId} {
+      allow read: if true; // Allow public read for online status
+      allow write: if isSignedIn() && isOwner(userId);
+    }
+
+    // Rules for notifications collection
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (
+        resource.data.recipientId == request.auth.uid ||
+        resource.data.senderId == request.auth.uid
+      );
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (
+        resource.data.recipientId == request.auth.uid ||
+        resource.data.senderId == request.auth.uid
+      );
+      allow delete: if isSignedIn() && resource.data.recipientId == request.auth.uid;
+    }
+
+    // Rules for anonymous users collection
+    match /anonymous/{userId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isOwner(userId);
+      allow delete: if isSignedIn() && isOwner(userId);
+    }
+
+    // Rules for nicknames collection
+    match /nicknames/{nickname} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
